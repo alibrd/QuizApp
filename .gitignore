@@ -1,0 +1,18 @@
+# Visual Studio specific
+.vs/
+*.sln
+*.pyproj
+*.suo
+*.user
+
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+
+# logs
+*.csv
+*.json
+*.jsonl

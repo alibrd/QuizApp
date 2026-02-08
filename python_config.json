@@ -1,0 +1,24 @@
+{
+  "title": "🤖 Python",
+  "role": "Act as a Python programming professor and ask difficult questions which prepares me for TestGorilla evaluation.",
+  "topics": [
+    "Arrays",
+    "Data Structures",
+    "BSF Algorithm",
+    "DFS Algorithm"
+  ],
+  "font": {
+    "family": "Verdana",
+    "size": 12
+  },
+  "logger": {
+    "type": "csv",
+    "log_dir": "C:/Projects/QuizApp/",
+    "fields": [ "timestamp", "prompt", "raw_response", "question", "options", "correct_answer" ]
+  },
+  "ai": {
+    "provider": "groq",
+    "model": "openai/gpt-oss-120b"
+  },
+  "question_types": [ "mcq","short" ]
+}
