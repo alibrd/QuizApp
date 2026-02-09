@@ -4,6 +4,7 @@
 *.pyproj
 *.suo
 *.user
+Notes.txt
 
 # Python specific
 __pycache__/
@@ -16,3 +17,4 @@ venv/
 *.csv
 *.json
 *.jsonl
+flashcards/

@@ -7,16 +7,16 @@ import random
 import os
 import json
 from logger import create_logger, NullLogger
-
-# IMPORT THE NEW MODULE
+# Flash Card
 from question_types import MultipleChoiceQuestion, TrueFalseQuestion, MultiSelectQuestion, ShortAnswerQuestion
+from flashcard import FlashCard, FlashCardService, FlashCardLogger, FlashCardDialog, DEFAULT_FLASHCARD_COUNT
 
 # --- DEFAULTS ---
 DEFAULT_FONT_FAMILY = "Arial"
 DEFAULT_FONT_SIZE = 12
 DEFAULT_CODE_FONT = "Courier New"
 DEFAULT_AI_PROVIDER = "groq"
-DEFAULT_AI_MODEL = "llama3-70b-8192" # Groq default
+DEFAULT_AI_MODEL = "openai/gpt-oss-120b" # Groq default
 
 # Map question type names to classes
 QUESTION_TYPE_MAP = {
@@ -50,7 +50,8 @@ class QuizApp:
             "role": "Act as a helpful tutor.",
             "topics": [],
             "font": {"family": DEFAULT_FONT_FAMILY, "size": DEFAULT_FONT_SIZE},
-            "ai": {"provider": DEFAULT_AI_PROVIDER, "model": DEFAULT_AI_MODEL}
+            "ai": {"provider": DEFAULT_AI_PROVIDER, "model": DEFAULT_AI_MODEL},
+            "flashcard": {"count": DEFAULT_FLASHCARD_COUNT, "model": None}
         }
         
         # State variables
@@ -61,6 +62,9 @@ class QuizApp:
         
         # Initialize with NullLogger (no logging until config is loaded)
         self.logger = NullLogger()
+        
+        # Flash card logger (created once per session)
+        self.flashcard_logger = None
         
         # Build Main UI Container
         self.main_container = tk.Frame(self.root)
@@ -122,6 +126,9 @@ class QuizApp:
     # --- SCREEN 1: LANDING ---
     def show_landing_screen(self):
         self.clear_window()
+        # Reset session-specific state
+        self.flashcard_logger = None
+        
         tk.Label(self.main_container, text="AI Assessment Loader", font=("Arial", 24, "bold")).pack(pady=60)
         
         tk.Button(self.main_container, text="📂 Load Quiz Configuration", 
@@ -149,6 +156,13 @@ class QuizApp:
             # Add this line to update font family and size from JSON
             if "font" in data: self.config["font"].update(data["font"])
 
+            # Parse flashcard config (optional)
+            flashcard_config = data.get("flashcard", {})
+            self.config["flashcard"] = {
+                "count": flashcard_config.get("count", DEFAULT_FLASHCARD_COUNT),
+                "model": flashcard_config.get("model")  # None means use main AI model
+            }
+
             # Parse question types from config
             question_types_config = data.get("question_types", [])
             self.question_classes = self._parse_question_types(question_types_config)
@@ -161,6 +175,9 @@ class QuizApp:
                 
                 self.logger = create_logger(logger_type, **logger_options)
                 
+                # Create flash card logger for this session
+                self.flashcard_logger = FlashCardLogger()
+                
                 self.logger.log_event("session_start", {
                     "title": self.config.get("title"),
                     "role": self.config.get("role"),
@@ -168,6 +185,7 @@ class QuizApp:
                     "ai": self.config.get("ai", {}),
                     "font": self.config.get("font", {}),
                     "question_types": [cls.__name__ for cls in self.question_classes],
+                    "flashcard_config": self.config.get("flashcard", {}),
                 })
                 self.start_quiz_ui()
                 
@@ -233,6 +251,14 @@ class QuizApp:
                                     bg="#f44336", fg="white", font=self.get_font("bold"), width=15)
         self.finish_btn.grid(row=0, column=2, padx=10)
 
+        self.flashcard_btn = tk.Button(
+            self.btn_frame, text="📝 Flash Cards", 
+            command=self._create_flashcards,
+            state=tk.DISABLED,
+            font=self.get_font("bold"), width=12
+        )
+        self.flashcard_btn.grid(row=0, column=3, padx=10)
+
         self.status_label = tk.Label(self.main_container, text="Initializing...", bd=1, relief=tk.SUNKEN, anchor=tk.W)
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -256,13 +282,22 @@ class QuizApp:
         {question_class.get_json_schema()}
         """
 
-    def fetch_ai_response(self, prompt):
-        """Handles the API call to different providers."""
+    def fetch_ai_response(self, prompt, model_override: str = None):
+        """Handles the API call to different providers.
+        
+        Args:
+            prompt: The prompt to send to the AI.
+            model_override: Optional model name to use instead of the configured model.
+        """
         provider = self.config['ai']['provider'].lower()
-        model = self.config['ai'].get('model', 'default')
+        model = model_override or self.config['ai'].get('model', 'default')
 
         try:
             if provider in ["flash", "lite", "gemini"]:
+                # For Gemini, if model override, create a new model instance
+                if model_override:
+                    temp_client = genai.GenerativeModel(model_override)
+                    return temp_client.generate_content(prompt).text
                 return self.ai_client.generate_content(prompt).text
             elif provider == "ollama":
                 res = self.ai_client.chat(model=model, messages=[{'role': 'user', 'content': prompt}])
@@ -332,6 +367,7 @@ class QuizApp:
             self.feedback_label.config(text="")
             self.submit_btn.config(state=tk.NORMAL)
             self.next_btn.config(state=tk.DISABLED)
+            self.flashcard_btn.config(state=tk.DISABLED)
             self.status_label.config(text=f"Question {self.total_questions + 1} ready.")
 
         except Exception as e:
@@ -373,6 +409,7 @@ class QuizApp:
 
         self.submit_btn.config(state=tk.DISABLED)
         self.next_btn.config(state=tk.NORMAL)
+        self.flashcard_btn.config(state=tk.NORMAL)
 
     def finish_assessment(self):
         pct = (self.score / self.total_questions * 100) if self.total_questions > 0 else 0
@@ -384,8 +421,68 @@ class QuizApp:
         )
         self.logger.log_event("session_end", {})
 
-        messagebox.showinfo("Result", f"Score: {self.score}/{self.total_questions}\n({pct:.1f}%)")
+        # Show flash card file info if any were created
+        if self.flashcard_logger and self.flashcard_logger.card_count > 0:
+            messagebox.showinfo("Result", 
+                f"Score: {self.score}/{self.total_questions}\n({pct:.1f}%)\n\n"
+                f"Flash cards saved: {self.flashcard_logger.card_count}\n"
+                f"File: {self.flashcard_logger.file_path}")
+        else:
+            messagebox.showinfo("Result", f"Score: {self.score}/{self.total_questions}\n({pct:.1f}%)")
+        
         self.show_landing_screen()
+
+    def _create_flashcards(self):
+        """Generate and display flash card selection dialog."""
+        if not self.current_question_obj:
+            return
+        
+        q_data = self.current_question_obj.data
+        question = q_data.get("question", "")
+        correct = q_data.get("correct", "")
+        
+        # Format answer based on type
+        if isinstance(correct, list):
+            answer = ", ".join(str(c) for c in correct)
+        else:
+            answer = str(correct)
+        
+        self.status_label.config(text="Generating flash cards...")
+        self.root.update()
+        
+        try:
+            # Get flashcard config
+            fc_config = self.config.get("flashcard", {})
+            fc_count = fc_config.get("count", DEFAULT_FLASHCARD_COUNT)
+            fc_model = fc_config.get("model")  # None means use main model
+            
+            # Create AI fetcher with optional model override
+            def flashcard_ai_fetcher(prompt: str) -> str:
+                return self.fetch_ai_response(prompt, model_override=fc_model)
+            
+            service = FlashCardService(flashcard_ai_fetcher, count=fc_count)
+            flashcards = service.generate_flashcards(question, answer)
+            
+            if not flashcards:
+                messagebox.showwarning("Warning", "No flash cards generated.")
+                return
+            
+            def on_complete(file_path: str, saved_count: int):
+                total = self.flashcard_logger.card_count
+                messagebox.showinfo("Success", 
+                    f"Added {saved_count} flash cards.\nTotal in session: {total}")
+                self.status_label.config(text=f"Flash cards saved. Total: {total}")
+            
+            FlashCardDialog(
+                self.root, flashcards, self.flashcard_logger, 
+                source_question=question, on_complete=on_complete
+            )
+            
+            self.status_label.config(text="Select flash cards to save.")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate flash cards: {e}")
+            self.status_label.config(text="Flash card generation failed.")
 
 if __name__ == "__main__":
     root = tk.Tk()

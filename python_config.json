@@ -1,10 +1,10 @@
 {
-  "title": "🤖 Python",
+  "title": "🐍 Python",
   "role": "Act as a Python programming professor and ask difficult questions which prepares me for TestGorilla evaluation.",
   "topics": [
     "Arrays",
     "Data Structures",
-    "BSF Algorithm",
+    "BFS Algorithm",
     "DFS Algorithm"
   ],
   "font": {
@@ -20,5 +20,9 @@
     "provider": "groq",
     "model": "openai/gpt-oss-120b"
   },
-  "question_types": [ "mcq","short" ]
+  "question_types": [ "mcq", "short", "tf", "multi_select" ],
+  "flashcard": {
+    "count": 2,
+    "model": null
+  }
 }
