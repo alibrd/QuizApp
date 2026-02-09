@@ -8,7 +8,14 @@ import os
 import json
 from logger import create_logger, NullLogger
 # Flash Card
-from question_types import MultipleChoiceQuestion, TrueFalseQuestion, MultiSelectQuestion, ShortAnswerQuestion
+from question_types import (
+    MultipleChoiceQuestion, 
+    TrueFalseQuestion, 
+    MultiSelectQuestion, 
+    ShortAnswerQuestion,
+    MultiAgentQuestion,
+    BASE_TYPE_MAP,
+)
 from flashcard import FlashCard, FlashCardService, FlashCardLogger, FlashCardDialog, DEFAULT_FLASHCARD_COUNT
 
 # --- DEFAULTS ---
@@ -28,6 +35,7 @@ QUESTION_TYPE_MAP = {
     "multi": MultiSelectQuestion,
     "short": ShortAnswerQuestion,
     "short_answer": ShortAnswerQuestion,
+    # multi_agent is handled specially, not in this map
 }
 
 # All available question classes
@@ -51,7 +59,8 @@ class QuizApp:
             "topics": [],
             "font": {"family": DEFAULT_FONT_FAMILY, "size": DEFAULT_FONT_SIZE},
             "ai": {"provider": DEFAULT_AI_PROVIDER, "model": DEFAULT_AI_MODEL},
-            "flashcard": {"count": DEFAULT_FLASHCARD_COUNT, "model": None}
+            "flashcard": {"count": DEFAULT_FLASHCARD_COUNT, "model": None},
+            "multi_agent": None,  # Multi-agent config (optional)
         }
         
         # State variables
@@ -163,6 +172,9 @@ class QuizApp:
                 "model": flashcard_config.get("model")  # None means use main AI model
             }
 
+            # Parse multi-agent config (optional)
+            self.config["multi_agent"] = data.get("multi_agent")
+
             # Parse question types from config
             question_types_config = data.get("question_types", [])
             self.question_classes = self._parse_question_types(question_types_config)
@@ -186,6 +198,7 @@ class QuizApp:
                     "font": self.config.get("font", {}),
                     "question_types": [cls.__name__ for cls in self.question_classes],
                     "flashcard_config": self.config.get("flashcard", {}),
+                    "multi_agent_enabled": self.config.get("multi_agent") is not None,
                 })
                 self.start_quiz_ui()
                 
@@ -309,42 +322,96 @@ class QuizApp:
             print(f"AI Error: {e}")
             return ""
 
+    def _generate_multi_agent_question(self, topic: str, base_type: str) -> dict:
+        """
+        Generate a question using the multi-agent pipeline.
+        
+        Args:
+            topic: The topic for the question.
+            base_type: The base question type (mcq, tf, etc.)
+        
+        Returns:
+            Parsed question data dict.
+        """
+        ma_config = self.config["multi_agent"]
+        
+        orchestrator = MultiAgentQuestion(
+            base_type=base_type,
+            roles=ma_config.get("roles", ["generator", "examiner", "finalizer"]),
+            topic=topic,
+            ai_fetcher=self.fetch_ai_response,
+            role_models=ma_config.get("role_models"),
+            max_attempts=ma_config.get("max_attempts", 3),
+            role_context=self.config.get("role", ""),
+            target_difficulty=ma_config.get("target_difficulty", 3),
+            logger=self.logger,
+        )
+        
+        return orchestrator.generate_question_json()
+
     def load_new_question(self):
         self.status_label.config(text="Generating new question...")
         self.root.update()
 
         try:
-            # 1. Select Topic and Question Type
+            # 1. Select Topic
             topic = random.choice(self.config['topics'])
             
-            # Randomly pick a question class from configured types
-            SelectedClass = random.choice(self.question_classes)
+            # Check if multi-agent mode is enabled
+            ma_config = self.config.get("multi_agent")
             
-            # 2. Generate Prompt specific to that class
-            prompt = self.generate_prompt_text(topic, SelectedClass(topic, {})) # Temp instance for prompt
-            
-            # 3. Fetch & Parse
-            raw_text = self.fetch_ai_response(prompt)
-            clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-            
-            try:
-                data = json.loads(clean_text)
-            except:
-                raise ValueError("AI returned invalid JSON")
+            if ma_config:
+                # --- MULTI-AGENT PATH ---
+                self.status_label.config(text="Generating question (multi-agent)...")
+                self.root.update()
+                
+                # Determine base type: from config or random
+                base_type = ma_config.get("base_type")
+                if not base_type:
+                    # Pick random base type from configured question classes
+                    SelectedClass = random.choice(self.question_classes)
+                    # Reverse lookup the type name
+                    base_type = next(
+                        (k for k, v in QUESTION_TYPE_MAP.items() if v == SelectedClass),
+                        "mcq"
+                    )
+                
+                # Generate via multi-agent pipeline
+                data = self._generate_multi_agent_question(topic, base_type)
+                
+                # Get the question class for the base type
+                SelectedClass = BASE_TYPE_MAP.get(base_type, MultipleChoiceQuestion)
+                
+            else:
+                # --- SINGLE-SHOT PATH (existing behavior) ---
+                # Randomly pick a question class from configured types
+                SelectedClass = random.choice(self.question_classes)
+                
+                # 2. Generate Prompt specific to that class
+                prompt = self.generate_prompt_text(topic, SelectedClass(topic, {})) # Temp instance for prompt
+                
+                # 3. Fetch & Parse
+                raw_text = self.fetch_ai_response(prompt)
+                clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+                
+                try:
+                    data = json.loads(clean_text)
+                except:
+                    raise ValueError("AI returned invalid JSON")
 
-            # Log AI exchange WITH parsed question data
-            provider = self.config["ai"]["provider"]
-            model = self.config["ai"].get("model", "default")
-            self.logger.log_ai_exchange(
-                provider=provider,
-                model=model,
-                topic=topic,
-                prompt=prompt,
-                raw_response=raw_text,
-                question=data.get("question", ""),
-                options=data.get("options"),
-                correct_answer=str(data.get("correct", "")),
-            )
+                # Log AI exchange WITH parsed question data
+                provider = self.config["ai"]["provider"]
+                model = self.config["ai"].get("model", "default")
+                self.logger.log_ai_exchange(
+                    provider=provider,
+                    model=model,
+                    topic=topic,
+                    prompt=prompt,
+                    raw_response=raw_text,
+                    question=data.get("question", ""),
+                    options=data.get("options"),
+                    correct_answer=str(data.get("correct", "")),
+                )
 
             # 4. Instantiate the Actual Question Object
             self.current_question_obj = SelectedClass(topic, data)
@@ -352,7 +419,13 @@ class QuizApp:
             # 5. Render UI
             self.question_text.config(state=tk.NORMAL)
             self.question_text.delete(1.0, tk.END)
-            self.question_text.insert(tk.END, f"Type: {data.get('type', 'Standard').upper()} | Topic: {topic}\n\n{data['question']}")
+            
+            # Add multi-agent indicator if applicable
+            mode_indicator = " [Multi-Agent]" if ma_config else ""
+            self.question_text.insert(
+                tk.END, 
+                f"Type: {data.get('type', 'Standard').upper()}{mode_indicator} | Topic: {topic}\n\n{data['question']}"
+            )
             self.question_text.config(state=tk.DISABLED)
 
             # Clear old options and render new ones

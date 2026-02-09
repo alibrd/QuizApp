@@ -24,5 +24,15 @@
   "flashcard": {
     "count": 2,
     "model": null
+  },
+  "multi_agent": {
+    "roles": [ "generator", "examiner", "finalizer" ],
+    "role_models": {
+      "generator": "openai/gpt-oss-120b",
+      "examiner": "llama-3.1-8b-instant",
+      "finalizer": "openai/gpt-oss-120b"
+    },
+    "max_attempts": 3,
+    "target_difficulty": 1
   }
 }
