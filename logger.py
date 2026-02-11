@@ -38,6 +38,13 @@ AVAILABLE_FIELDS = {
     
     # Session start fields
     "title", "role", "topics", "ai_config", "font_config",
+
+    # Multi-agent pipeline fields
+    "agent_role",          # e.g., "generator", "examiner", "finalizer"
+    "step_order",          # int, sequential position in the pipeline
+    "validation_status",   # bool, did the step produce valid JSON/schema?
+    "processing_error",    # str, error message on failure (e.g., "No Response")
+    "draft_content",       # intermediate JSON or raw text at this step
 }
 
 # Default fields if none specified
@@ -59,6 +66,9 @@ class NullLogger:
         pass
 
     def log_session_result(self, **kwargs) -> None:
+        pass
+
+    def log_multi_agent_step(self, **kwargs) -> None:
         pass
 
 
@@ -183,6 +193,47 @@ class AssessmentLogger(BaseLogger):
             "percent": percent,
         })
 
+    def log_multi_agent_step(
+        self,
+        *,
+        step_order: int,
+        agent_role: str,
+        topic: str,
+        prompt: str,
+        raw_response: str,
+        validation_status: bool,
+        processing_error: Optional[str] = None,
+        draft_content: Optional[Any] = None,
+    ) -> None:
+        """
+        Log a single step in the multi-agent pipeline.
+
+        Args:
+            step_order: Sequential index of this step within the pipeline run.
+            agent_role: The agent role name (e.g., "generator", "examiner").
+            topic: The question topic being processed.
+            prompt: The full prompt sent to the AI for this step.
+            raw_response: The raw text returned by the AI (captured BEFORE json.loads).
+            validation_status: True if the response was valid JSON/schema, False otherwise.
+            processing_error: Error description if the step failed (e.g., "No Response",
+                              "JSONDecodeError: ..."). None on success.
+            draft_content: The parsed JSON dict (on success) or the raw text (on failure)
+                           representing the intermediate state at this step.
+        """
+        payload = {
+            "step_order": step_order,
+            "agent_role": agent_role,
+            "topic": topic,
+            "prompt": prompt,
+            "raw_response": raw_response,
+            "validation_status": validation_status,
+        }
+        if processing_error is not None:
+            payload["processing_error"] = processing_error
+        if draft_content is not None:
+            payload["draft_content"] = draft_content
+        self.log_event("multi_agent_step", payload)
+
 
 @dataclass
 class CsvLogger(BaseLogger):
@@ -204,6 +255,9 @@ class CsvLogger(BaseLogger):
             "correct_answer", "user_answer", "is_correct", "feedback",
             "prompt", "raw_response", "score", "total_questions", "percent",
             "title", "role", "topics", "ai_config", "font_config",
+            # Multi-agent fields at the end so single-shot rows just have empty cells
+            "agent_role", "step_order", "validation_status",
+            "processing_error", "draft_content",
         ]
         return [f for f in preferred_order if f in self._enabled_fields]
 
@@ -300,6 +354,38 @@ class CsvLogger(BaseLogger):
             "total_questions": total_questions,
             "percent": percent,
         })
+
+    def log_multi_agent_step(
+        self,
+        *,
+        step_order: int,
+        agent_role: str,
+        topic: str,
+        prompt: str,
+        raw_response: str,
+        validation_status: bool,
+        processing_error: Optional[str] = None,
+        draft_content: Optional[Any] = None,
+    ) -> None:
+        """
+        Log a single step in the multi-agent pipeline to CSV.
+
+        Fields that are not relevant to single-shot questions (e.g., step_order)
+        will simply be empty cells for those rows, preserving backward compatibility.
+        """
+        payload = {
+            "step_order": step_order,
+            "agent_role": agent_role,
+            "topic": topic,
+            "prompt": prompt,
+            "raw_response": raw_response,
+            "validation_status": validation_status,
+        }
+        if processing_error is not None:
+            payload["processing_error"] = processing_error
+        if draft_content is not None:
+            payload["draft_content"] = draft_content
+        self.log_event("multi_agent_step", payload)
 
 
 LoggerType = Union[AssessmentLogger, CsvLogger, NullLogger]

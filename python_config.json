@@ -14,7 +14,20 @@
   "logger": {
     "type": "csv",
     "log_dir": "C:/Projects/QuizApp/",
-    "fields": [ "timestamp", "prompt", "raw_response", "question", "options", "correct_answer" ]
+    "fields": [
+      "timestamp",
+      "event_type",
+      "prompt",
+      "raw_response",
+      "question",
+      "options",
+      "correct_answer",
+      "agent_role",
+      "step_order",
+      "validation_status",
+      "processing_error",
+      "draft_content"
+    ]
   },
   "ai": {
     "provider": "groq",

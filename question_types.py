@@ -529,7 +529,7 @@ class MultiAgentQuestion:
         "ai": { "model": "openai/gpt-oss-120b" },      // Default fallback
         "multi_agent": {
             "roles": ["generator", "pedagogy_reviewer", "examiner", "finalizer"],
-            "role_models": {
+            "role_models": {                       // Optional: per-agent model overrides
                 "generator": "openai/gpt-oss-120b",
                 "examiner": "llama-3.1-8b-instant",
                 "finalizer": "openai/gpt-oss-120b"
@@ -793,6 +793,7 @@ Output ONLY the JSON. No explanations.
         self._pedagogy_feedback: Optional[Dict] = None
         self._examiner_feedback: Optional[Dict] = None
         self._execution_log: List[Dict] = []
+        self._step_counter: int = 0
     
     def _get_schema(self) -> str:
         """Get the JSON schema for the base question type."""
@@ -815,11 +816,80 @@ Output ONLY the JSON. No explanations.
         return json.loads(clean)
     
     def _log(self, role: str, status: str, data: Any = None):
-        """Log role execution for debugging."""
+        """Log role execution to local execution log for debugging."""
         entry = {"role": role, "status": status, "data": data}
         self._execution_log.append(entry)
+    
+    def _execute_and_log(self, role: str, prompt: str) -> Dict:
+        """
+        Central helper: call AI, capture raw response, parse JSON, and log
+        the step to self.logger immediately.
+
+        On success: logs validation_status=True with parsed dict as draft_content.
+        On failure: logs validation_status=False with raw text as draft_content
+                    and the error message as processing_error, then re-raises.
+
+        Returns:
+            Parsed JSON dict from the AI response.
+
+        Raises:
+            ValueError: If AI returns empty/no response.
+            json.JSONDecodeError: If response is not valid JSON.
+        """
+        self._step_counter += 1
+        step_order = self._step_counter
+
+        raw = self._call_ai(prompt, role)
+
+        # Guard against empty / None responses
+        if not raw or not raw.strip():
+            error_msg = "No Response"
+            self._log(role, "error", error_msg)
+            if self.logger:
+                self.logger.log_multi_agent_step(
+                    step_order=step_order,
+                    agent_role=role,
+                    topic=self.topic,
+                    prompt=prompt,
+                    raw_response="",
+                    validation_status=False,
+                    processing_error=error_msg,
+                    draft_content=None,
+                )
+            raise ValueError(error_msg)
+
+        try:
+            result = self._parse_json(raw)
+        except (json.JSONDecodeError, ValueError) as parse_err:
+            error_msg = f"{type(parse_err).__name__}: {parse_err}"
+            self._log(role, "error", error_msg)
+            if self.logger:
+                self.logger.log_multi_agent_step(
+                    step_order=step_order,
+                    agent_role=role,
+                    topic=self.topic,
+                    prompt=prompt,
+                    raw_response=raw,
+                    validation_status=False,
+                    processing_error=error_msg,
+                    draft_content=raw,  # Raw text preserved for debugging
+                )
+            raise
+
+        # Success path
+        self._log(role, "success", result)
         if self.logger:
-            self.logger.log_event("multi_agent_role", entry)
+            self.logger.log_multi_agent_step(
+                step_order=step_order,
+                agent_role=role,
+                topic=self.topic,
+                prompt=prompt,
+                raw_response=raw,
+                validation_status=True,
+                processing_error=None,
+                draft_content=result,
+            )
+        return result
     
     def _execute_generator(self) -> Dict:
         """
@@ -830,14 +900,10 @@ Output ONLY the JSON. No explanations.
         prompt = self.GENERATOR_PROMPT.format(
             base_type=self.base_type.upper(),
             topic=self.topic,
-            role_context=self.role_context,  # Generator is aware of the original role
+            role_context=self.role_context,
             schema=self._get_schema(),
         )
-        
-        raw = self._call_ai(prompt, "generator")
-        result = self._parse_json(raw)
-        self._log("generator", "success", result)
-        return result
+        return self._execute_and_log("generator", prompt)
     
     def _execute_pedagogy_reviewer(self, candidate: Dict) -> Dict:
         """
@@ -848,11 +914,7 @@ Output ONLY the JSON. No explanations.
         prompt = self.PEDAGOGY_REVIEWER_PROMPT.format(
             candidate_json=json.dumps(candidate, indent=2),
         )
-        
-        raw = self._call_ai(prompt, "pedagogy_reviewer")
-        result = self._parse_json(raw)
-        self._log("pedagogy_reviewer", "success", result)
-        return result
+        return self._execute_and_log("pedagogy_reviewer", prompt)
     
     def _execute_examiner(self, candidate: Dict, reviewer_feedback: Optional[Dict]) -> Dict:
         """
@@ -867,11 +929,7 @@ Output ONLY the JSON. No explanations.
             schema=self._get_schema(),
             reviewer_feedback=feedback_str,
         )
-        
-        raw = self._call_ai(prompt, "examiner")
-        result = self._parse_json(raw)
-        self._log("examiner", "success", result)
-        return result
+        return self._execute_and_log("examiner", prompt)
     
     def _execute_finalizer(
         self,
@@ -890,13 +948,9 @@ Output ONLY the JSON. No explanations.
             pedagogy_feedback=json.dumps(pedagogy_feedback, indent=2) if pedagogy_feedback else "None",
             examiner_feedback=json.dumps(examiner_feedback, indent=2) if examiner_feedback else "None",
             schema=self._get_schema(),
-            role_context=self.role_context,  # Finalizer is aware of the original role
+            role_context=self.role_context,
         )
-        
-        raw = self._call_ai(prompt, "finalizer")
-        result = self._parse_json(raw)
-        self._log("finalizer", "success", result)
-        return result
+        return self._execute_and_log("finalizer", prompt)
     
     def _execute_distractor_specialist(self, candidate: Dict) -> Dict:
         """Execute distractor specialist to improve wrong answers."""
@@ -904,11 +958,7 @@ Output ONLY the JSON. No explanations.
             candidate_json=json.dumps(candidate, indent=2),
             schema=self._get_schema(),
         )
-        
-        raw = self._call_ai(prompt, "distractor_specialist")
-        result = self._parse_json(raw)
-        self._log("distractor_specialist", "success", result)
-        return result
+        return self._execute_and_log("distractor_specialist", prompt)
     
     def _execute_difficulty_calibrator(self, candidate: Dict) -> Dict:
         """Execute difficulty calibrator to adjust question difficulty."""
@@ -917,11 +967,7 @@ Output ONLY the JSON. No explanations.
             target_difficulty=self.target_difficulty,
             schema=self._get_schema(),
         )
-        
-        raw = self._call_ai(prompt, "difficulty_calibrator")
-        result = self._parse_json(raw)
-        self._log("difficulty_calibrator", "success", result)
-        return result
+        return self._execute_and_log("difficulty_calibrator", prompt)
     
     def _execute_deduplicator(self, candidate: Dict, recent_questions: List[Dict]) -> Dict:
         """Check for duplicate/similar questions in session."""
@@ -929,11 +975,7 @@ Output ONLY the JSON. No explanations.
             candidate_json=json.dumps(candidate, indent=2),
             recent_questions=json.dumps(recent_questions, indent=2),
         )
-        
-        raw = self._call_ai(prompt, "deduplicator")
-        result = self._parse_json(raw)
-        self._log("deduplicator", "success", result)
-        return result
+        return self._execute_and_log("deduplicator", prompt)
     
     def _validate_schema(self, data: Dict) -> bool:
         """Basic schema validation for the base question type."""
