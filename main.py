@@ -295,29 +295,59 @@ class QuizApp:
         {question_class.get_json_schema()}
         """
 
-    def fetch_ai_response(self, prompt, model_override: str = None):
+    def fetch_ai_response(self, prompt, model_override: str = None, json_mode: bool = True):
         """Handles the API call to different providers.
         
         Args:
             prompt: The prompt to send to the AI.
             model_override: Optional model name to use instead of the configured model.
+            json_mode: If True, request structured JSON output from the provider.
         """
         provider = self.config['ai']['provider'].lower()
         model = model_override or self.config['ai'].get('model', 'default')
 
         try:
             if provider in ["flash", "lite", "gemini"]:
-                # For Gemini, if model override, create a new model instance
+                # Gemini: use response_mime_type for JSON mode
+                generation_config = None
+                if json_mode:
+                    generation_config = genai.types.GenerationConfig(
+                        response_mime_type="application/json"
+                    )
+                
                 if model_override:
                     temp_client = genai.GenerativeModel(model_override)
-                    return temp_client.generate_content(prompt).text
-                return self.ai_client.generate_content(prompt).text
+                    return temp_client.generate_content(
+                        prompt, generation_config=generation_config
+                    ).text
+                return self.ai_client.generate_content(
+                    prompt, generation_config=generation_config
+                ).text
+                
             elif provider == "ollama":
-                res = self.ai_client.chat(model=model, messages=[{'role': 'user', 'content': prompt}])
+                # Ollama: use format parameter for JSON mode
+                kwargs = {
+                    "model": model,
+                    "messages": [{'role': 'user', 'content': prompt}]
+                }
+                if json_mode:
+                    kwargs["format"] = "json"
+                
+                res = self.ai_client.chat(**kwargs)
                 return res['message']['content']
+                
             elif provider == "groq":
-                res = self.ai_client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model=model)
+                # Groq: use response_format for JSON mode
+                kwargs = {
+                    "messages": [{"role": "user", "content": prompt}],
+                    "model": model
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+                
+                res = self.ai_client.chat.completions.create(**kwargs)
                 return res.choices[0].message.content
+                
         except Exception as e:
             print(f"AI Error: {e}")
             return ""
