@@ -169,7 +169,9 @@ class QuizApp:
             flashcard_config = data.get("flashcard", {})
             self.config["flashcard"] = {
                 "count": flashcard_config.get("count", DEFAULT_FLASHCARD_COUNT),
-                "model": flashcard_config.get("model")  # None means use main AI model
+                "model": flashcard_config.get("model"),
+                "log_dir": flashcard_config.get("log_dir", "flashcards"),
+                "file_name": flashcard_config.get("file_name"),  # None = create new file
             }
 
             # Parse multi-agent config (optional)
@@ -188,7 +190,12 @@ class QuizApp:
                 self.logger = create_logger(logger_type, **logger_options)
                 
                 # Create flash card logger for this session
-                self.flashcard_logger = FlashCardLogger()
+                fc_config = self.config.get("flashcard", {})
+                fc_log_dir = fc_config.get("log_dir", "flashcards")
+                fc_file_name = fc_config.get("file_name")  # None = auto-generate
+                self.flashcard_logger = FlashCardLogger(
+                    log_dir=fc_log_dir, file_name=fc_file_name
+                )
                 
                 self.logger.log_event("session_start", {
                     "title": self.config.get("title"),
@@ -303,7 +310,7 @@ class QuizApp:
             model_override: Optional model name to use instead of the configured model.
             json_mode: If True, request structured JSON output from the provider.
         """
-        provider = self.config['ai']['provider'].lower()
+        provider = self.config['ai'].get('provider', DEFAULT_AI_PROVIDER).lower()
         model = model_override or self.config['ai'].get('model', 'default')
 
         try:

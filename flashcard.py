@@ -71,18 +71,29 @@ class FlashCardService:
 
 @dataclass
 class FlashCardLogger:
-    """Handles saving flash cards to a single CSV file per session (append mode)."""
+    """Handles saving flash cards to a CSV file (append mode).
+    
+    If file_name is provided, appends to that existing file.
+    If file_name is None, creates a new timestamped file per session.
+    """
     log_dir: str = "flashcards"
+    file_name: Optional[str] = None
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     _file_path: str = field(init=False)
     _file_exists: bool = field(init=False, default=False)
     
     def __post_init__(self):
         os.makedirs(self.log_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._file_path = os.path.join(
-            self.log_dir, f"flashcards_{timestamp}_{self.session_id}.csv"
-        )
+        
+        if self.file_name:
+            # Append mode: use the specified file name directly
+            self._file_path = os.path.join(self.log_dir, self.file_name)
+        else:
+            # New file mode: generate a unique timestamped file name
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._file_path = os.path.join(
+                self.log_dir, f"flashcards_{timestamp}_{self.session_id}.csv"
+            )
     
     @property
     def file_path(self) -> str:
@@ -145,6 +156,24 @@ class FlashCardDialog:
         self.dialog.grab_set()
         
         self._build_ui()
+        self._center_dialog(parent)
+    
+    def _center_dialog(self, parent: tk.Tk):
+        """Center the dialog over the parent window."""
+        self.dialog.update_idletasks()
+        
+        dialog_w = self.dialog.winfo_width()
+        dialog_h = self.dialog.winfo_height()
+        
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        parent_w = parent.winfo_width()
+        parent_h = parent.winfo_height()
+        
+        x = parent_x + (parent_w - dialog_w) // 2
+        y = parent_y + (parent_h - dialog_h) // 2
+        
+        self.dialog.geometry(f"+{x}+{y}")
     
     def _build_ui(self):
         # Header with session info
