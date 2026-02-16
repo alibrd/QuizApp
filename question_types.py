@@ -32,6 +32,10 @@ class Question(ABC):
     def check_answer(self, user_answer):
         pass
 
+    def _get_explanation(self):
+        """Return the explanation from the AI response data, or empty string."""
+        return self.data.get("explanation", "")
+
 
 # --- SUBCLASSES ---
 
@@ -46,7 +50,8 @@ class MultipleChoiceQuestion(Question):
             "type": "mcq",
             "question": "Question text...",
             "options": {"a": "...", "b": "...", "c": "...", "d": "..."},
-            "correct": "a"
+            "correct": "a",
+            "explanation": "Brief explanation of why the correct answer is right."
         }
         """
 
@@ -91,9 +96,16 @@ class MultipleChoiceQuestion(Question):
 
     def check_answer(self, user_answer):
         correct = self.data['correct'].lower()
+        explanation = self._get_explanation()
         if user_answer == correct:
-            return True, "Correct!"
-        return False, f"Incorrect. The correct answer was {correct.upper()}."
+            feedback = "Correct!"
+            if explanation:
+                feedback += f"\n📖 {explanation}"
+            return True, feedback
+        feedback = f"Incorrect. The correct answer was {correct.upper()}."
+        if explanation:
+            feedback += f"\n📖 {explanation}"
+        return False, feedback
 
 
 class TrueFalseQuestion(Question):
@@ -106,7 +118,8 @@ class TrueFalseQuestion(Question):
         {
             "type": "tf",
             "question": "Statement text...",
-            "correct": "true" 
+            "correct": "true",
+            "explanation": "Brief explanation of why the answer is true or false."
         }
         """
 
@@ -134,9 +147,16 @@ class TrueFalseQuestion(Question):
 
     def check_answer(self, user_answer):
         correct = str(self.data['correct']).lower()
+        explanation = self._get_explanation()
         if user_answer == correct:
-            return True, "Correct!"
-        return False, f"Incorrect. The answer is {correct.title()}."
+            feedback = "Correct!"
+            if explanation:
+                feedback += f"\n📖 {explanation}"
+            return True, feedback
+        feedback = f"Incorrect. The answer is {correct.title()}."
+        if explanation:
+            feedback += f"\n📖 {explanation}"
+        return False, feedback
 
 
 class MultiSelectQuestion(Question):
@@ -150,7 +170,8 @@ class MultiSelectQuestion(Question):
             "type": "multi_select",
             "question": "Question text...",
             "options": {"a": "...", "b": "...", "c": "...", "d": "..."},
-            "correct": ["a", "c"] 
+            "correct": ["a", "c"],
+            "explanation": "Brief explanation of why these options are correct."
         }
         """
 
@@ -193,10 +214,17 @@ class MultiSelectQuestion(Question):
     def check_answer(self, user_answer):
         correct = sorted([x.lower() for x in self.data['correct']])
         user = sorted([x.lower() for x in user_answer])
+        explanation = self._get_explanation()
         
         if user == correct:
-            return True, "Correct!"
-        return False, f"Incorrect. Required: {', '.join(correct).upper()}"
+            feedback = "Correct!"
+            if explanation:
+                feedback += f"\n📖 {explanation}"
+            return True, feedback
+        feedback = f"Incorrect. Required: {', '.join(correct).upper()}"
+        if explanation:
+            feedback += f"\n📖 {explanation}"
+        return False, feedback
 
 
 class ShortAnswerQuestion(Question):
@@ -231,7 +259,8 @@ Only include variable specifications when the question requires them. Omit them 
         {
             "type": "short",
             "question": "Write the code to create a string from an integer\\ninput variable: x\\noutput variable: y",
-            "correct": "y = str(x)"
+            "correct": "y = str(x)",
+            "explanation": "Brief explanation of the answer."
         }
         """
 
@@ -249,10 +278,17 @@ Only include variable specifications when the question requires them. Omit them 
     def check_answer(self, user_answer):
         clean_user = user_answer.strip().lower()
         clean_correct = self.data['correct'].strip().lower()
+        explanation = self._get_explanation()
         
         if clean_user == clean_correct:
-            return True, "Correct!"
-        return False, f"Incorrect. Expected: {self.data['correct']}"
+            feedback = "Correct!"
+            if explanation:
+                feedback += f"\n📖 {explanation}"
+            return True, feedback
+        feedback = f"Incorrect. Expected: {self.data['correct']}"
+        if explanation:
+            feedback += f"\n📖 {explanation}"
+        return False, feedback
 
 
 # --- MULTI-AGENT QUESTION ORCHESTRATOR ---
@@ -290,14 +326,7 @@ class MultiAgentQuestion:
     The pipeline executes a sequence of AI "agents" (roles), each with a specific
     responsibility. Data flows through the pipeline as follows:
     
-        generator ? pedagogy_reviewer ? examiner ? finalizer
-                          ?                 ?
-                    (feedback JSON)   (feedback JSON)
-                          ???????????????????
-                                   ?
-                              finalizer
-                                   ?
-                          (final question JSON)
+        generator -> pedagogy_reviewer -> examiner -> finalizer
     
     Each agent receives input, processes it, and outputs structured JSON:
     
@@ -341,57 +370,57 @@ class MultiAgentQuestion:
     (a) Minimal - Generator only (fastest, lowest quality):
         "roles": ["generator"]
         
-        Flow: generator ? output
+        Flow: generator -> output
         Use case: Quick prototyping, when speed matters more than quality
     
     (b) Two agents - Generator + Finalizer (fast with refinement):
         "roles": ["generator", "finalizer"]
         
-        Flow: generator ? finalizer ? output
+        Flow: generator -> finalizer -> output
         Use case: Basic refinement without review overhead
     
     (c) Generator + Examiner (correctness focus):
         "roles": ["generator", "examiner", "finalizer"]
         
-        Flow: generator ? examiner ? finalizer ? output
+        Flow: generator -> examiner -> finalizer -> output
         Use case: When correctness validation is critical, skip pedagogy review
     
     (d) Generator + Pedagogy Reviewer (learning quality focus):
         "roles": ["generator", "pedagogy_reviewer", "finalizer"]
         
-        Flow: generator ? pedagogy_reviewer ? finalizer ? output
+        Flow: generator -> pedagogy_reviewer -> finalizer -> output
         Use case: When learning quality matters more than strict validation
     
     (e) Full pipeline (highest quality, slowest):
         "roles": ["generator", "pedagogy_reviewer", "examiner", "finalizer"]
         
-        Flow: generator ? pedagogy_reviewer ? examiner ? finalizer ? output
+        Flow: generator -> pedagogy_reviewer -> examiner -> finalizer -> output
         Use case: Production-quality questions with full review
     
     (f) With difficulty calibration:
         "roles": ["generator", "examiner", "difficulty_calibrator", "finalizer"]
         
-        Flow: generator ? examiner ? difficulty_calibrator ? finalizer ? output
+        Flow: generator -> examiner -> difficulty_calibrator -> finalizer -> output
         Use case: When you need questions at a specific difficulty level
     
     (g) MCQ with distractor specialist:
         "roles": ["generator", "distractor_specialist", "examiner", "finalizer"]
         
-        Flow: generator ? distractor_specialist ? examiner ? finalizer ? output
+        Flow: generator -> distractor_specialist -> examiner -> finalizer -> output
         Use case: High-quality MCQ with improved wrong answer options
     
     (h) Maximum quality pipeline (all agents):
         "roles": ["generator", "pedagogy_reviewer", "distractor_specialist", 
                   "examiner", "difficulty_calibrator", "finalizer"]
         
-        Flow: generator ? pedagogy_reviewer ? distractor_specialist ? 
-              examiner ? difficulty_calibrator ? finalizer ? output
+        Flow: generator -> pedagogy_reviewer -> distractor_specialist -> 
+              examiner -> difficulty_calibrator -> finalizer -> output
         Use case: Highest possible quality, suitable for final exam creation
     
     (i) Deduplication-aware pipeline:
         "roles": ["generator", "deduplicator", "examiner", "finalizer"]
         
-        Flow: generator ? deduplicator ? examiner ? finalizer ? output
+        Flow: generator -> deduplicator -> examiner -> finalizer -> output
         Use case: Long quiz sessions where question repetition is a concern
     
     JSON CONFIG EXAMPLES:
@@ -486,30 +515,30 @@ class MultiAgentQuestion:
     The "role" field from the config JSON (e.g., "Act as a Python professor...")
     is passed to the pipeline as `role_context`. However, NOT all agents receive it:
     
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? Agent                   ? Knows Role?     ? Reason                      ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? generator               ? ? YES          ? Creates questions in the    ?
         ?                         ?                 ? intended style/context      ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? pedagogy_reviewer       ? ? NO           ? Should evaluate objectively ?
         ?                         ?                 ? without context bias        ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? examiner                ? ? NO           ? Should validate correctness ?
         ?                         ?                 ? objectively                 ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? distractor_specialist   ? ? NO           ? Focuses on distractor       ?
         ?                         ?                 ? quality, not style          ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? difficulty_calibrator   ? ? NO           ? Adjusts difficulty          ?
         ?                         ?                 ? objectively                 ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? deduplicator            ? ? NO           ? Compares questions          ?
         ?                         ?                 ? objectively                 ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? finalizer               ? ? YES          ? Ensures final output        ?
         ?                         ?                 ? matches intended style/tone ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
     
     This design ensures:
     - Generator creates questions tailored to the specified context
@@ -554,9 +583,9 @@ class MultiAgentQuestion:
     
     6. AVAILABLE AGENTS SUMMARY
     ---------------------------
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? Agent                   ? Required ? Description                        ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
         ? generator               ? ? YES   ? Creates initial question           ?
         ? pedagogy_reviewer       ? ? NO    ? Evaluates learning quality         ?
         ? examiner / judge        ? ? NO    ? Validates correctness & schema     ?
@@ -564,7 +593,7 @@ class MultiAgentQuestion:
         ? distractor_specialist   ? ? NO    ? Improves MCQ wrong answers         ?
         ? difficulty_calibrator   ? ? NO    ? Adjusts difficulty (1-5)           ?
         ? deduplicator            ? ? NO    ? Checks for similar questions       ?
-        ???????????????????????????????????????????????????????????????????????????
+        ===========================================================================
     
     ================================================================================
     """
@@ -585,6 +614,7 @@ Requirements:
 - Include plausible distractors (wrong answers should be believable)
 - Ensure the question is clear and unambiguous
 - The correct answer must be definitively correct
+- Include a brief explanation (1-2 sentences) of why the correct answer is right
 
 You MUST output ONLY valid JSON matching this EXACT schema:
 {schema}
@@ -677,6 +707,7 @@ Instructions:
 3. Maintain the style and tone specified in the Context/Role above
 4. Output MUST match the required schema EXACTLY
 5. Do NOT add any extra keys or metadata
+6. Include the "explanation" field with a brief 1-2 sentence explanation
 
 Output ONLY the final JSON. No explanations, no markdown, no additional text.
 """

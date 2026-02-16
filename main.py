@@ -1,8 +1,9 @@
 import tkinter as tk
 from tkinter import messagebox, filedialog
-import google.generativeai as genai
+from google import genai
 import ollama
 from groq import Groq
+from huggingface_hub import InferenceClient
 import random
 import os
 import json
@@ -223,6 +224,11 @@ class QuizApp:
                 self.ai_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
             elif provider == "ollama":
                 self.ai_client = ollama
+            elif provider in ("huggingface", "hf"):
+                self.ai_client = InferenceClient(
+                    provider="auto",
+                    api_key=os.environ.get("HF_TOKEN"),
+                )
             else:
                 raise ValueError(f"Unknown provider: {provider}")
             return True
@@ -251,9 +257,16 @@ class QuizApp:
         self.options_frame = tk.Frame(self.main_container)
         self.options_frame.pack(pady=5, padx=20, fill="x")
 
-        # Feedback Area
+        # Feedback Area (correct/incorrect result)
         self.feedback_label = tk.Label(self.main_container, text="", font=self.get_font("bold"))
-        self.feedback_label.pack(pady=10)
+        self.feedback_label.pack(pady=(10, 0))
+
+        # Explanation Area (AI-generated explanation shown after submit)
+        self.explanation_label = tk.Label(
+            self.main_container, text="", font=self.get_font("normal"),
+            fg="#555555", wraplength=800, justify="left", anchor="w"
+        )
+        self.explanation_label.pack(pady=(2, 10), padx=20, fill="x")
 
         # Controls
         self.btn_frame = tk.Frame(self.main_container)
@@ -352,6 +365,18 @@ class QuizApp:
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
                 
+                res = self.ai_client.chat.completions.create(**kwargs)
+                return res.choices[0].message.content
+
+            elif provider in ("huggingface", "hf"):
+                # Hugging Face Inference API: OpenAI-compatible chat endpoint
+                kwargs = {
+                    "messages": [{"role": "user", "content": prompt}],
+                    "model": model,
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+
                 res = self.ai_client.chat.completions.create(**kwargs)
                 return res.choices[0].message.content
                 
@@ -475,6 +500,7 @@ class QuizApp:
 
             # Reset Buttons/Labels
             self.feedback_label.config(text="")
+            self.explanation_label.config(text="")
             self.submit_btn.config(state=tk.NORMAL)
             self.next_btn.config(state=tk.DISABLED)
             self.flashcard_btn.config(state=tk.DISABLED)
@@ -511,11 +537,19 @@ class QuizApp:
         )
 
         self.total_questions += 1
+
+        # Split feedback into result line and explanation
+        feedback_lines = feedback.split("\n", 1)
+        result_text = feedback_lines[0]
+        explanation_text = feedback_lines[1] if len(feedback_lines) > 1 else ""
+
         if is_correct:
             self.score += 1
-            self.feedback_label.config(text=feedback, fg="green")
+            self.feedback_label.config(text=result_text, fg="green")
         else:
-            self.feedback_label.config(text=feedback, fg="red")
+            self.feedback_label.config(text=result_text, fg="red")
+
+        self.explanation_label.config(text=explanation_text)
 
         self.submit_btn.config(state=tk.DISABLED)
         self.next_btn.config(state=tk.NORMAL)
